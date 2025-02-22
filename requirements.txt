@@ -3,3 +3,4 @@ uvicorn
 pymupdf
 psycopg2-binary
 pydantic
+python-multipart
