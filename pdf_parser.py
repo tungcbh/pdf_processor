@@ -8,7 +8,7 @@ def parse_pdf(file_path: str) -> list:
         text = page.get_text("text")
         lines = text.split("\n")
         for line_num, line in enumerate(lines):
-            if line.strip():  # Bỏ qua dòng trống
+            if line.strip():  # skip empty lineline
                 pdf_data.append({
                     "filename": file_path.split("/")[-1],
                     "page": page_num + 1,
