@@ -5,6 +5,12 @@ from models import PDFContent
 import uvicorn
 import os
 import traceback
+from multiprocessing import Pool, cpu_count
+import logging
+
+# Thiết lập logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 UPLOAD_DIR = "uploads"
@@ -15,27 +21,41 @@ if not os.path.exists(UPLOAD_DIR):
 def startup_event():
     try:
         init_db()
-        print("Database initialized successfully")
+        logger.info("Database initialized successfully")
     except Exception as e:
-        print(f"Error initializing database: {e}")
+        logger.error(f"Error initializing database: {e}")
         traceback.print_exc()
+
+def process_file(file_info: tuple) -> dict:
+    """Xử lý một file PDF từ dữ liệu bytes"""
+    filename, file_content = file_info
+    try:
+        file_path = os.path.join(UPLOAD_DIR, filename)
+        with open(file_path, "wb") as f:
+            f.write(file_content)
+        logger.info(f"Processing file: {filename}")
+        pdf_data = parse_pdf(file_path)
+        logger.info(f"Parsed {len(pdf_data)} entries from {filename}")
+        file_size = len(file_content)
+        file_id = save_to_db(pdf_data, filename, file_size)
+        logger.info(f"Saved to DB with file_id: {file_id}")
+        return {"filename": filename, "status": "processed"}
+    except Exception as e:
+        logger.error(f"Error processing file {filename}: {e}")
+        traceback.print_exc()
+        return {"filename": filename, "status": "error", "error": str(e)}
 
 @app.post("/upload_pdf/")
 async def upload_pdf(files: list[UploadFile] = File(...)):
-    results = []
     try:
-        for file in files:
-            file_path = os.path.join(UPLOAD_DIR, file.filename)
-            file_content = await file.read()
-            with open(file_path, "wb") as f:
-                f.write(file_content)
-            pdf_data = parse_pdf(file_path)
-            file_size = len(file_content)  # Kích thước file (bytes)
-            save_to_db(pdf_data, file.filename, file_size)
-            results.append({"filename": file.filename, "status": "processed"})
+        file_data = [(file.filename, await file.read()) for file in files]
+        logger.info(f"Received {len(file_data)} files for processing")
+        num_processes = min(cpu_count() - 1, len(files)) or 1
+        with Pool(processes=num_processes) as pool:
+            results = pool.map(process_file, file_data)
         return {"message": "PDFs processed", "details": results}
     except Exception as e:
-        print(f"Error processing upload: {e}")
+        logger.error(f"Error processing upload: {e}")
         traceback.print_exc()
         return {"message": "Error processing PDFs", "error": str(e)}, 500
 
@@ -43,9 +63,10 @@ async def upload_pdf(files: list[UploadFile] = File(...)):
 def query_pdf(search: str):
     try:
         results = query_db(search)
+        logger.info(f"Query returned {len(results)} results for search: {search}")
         return results
     except Exception as e:
-        print(f"Error querying database: {e}")
+        logger.error(f"Error querying database: {e}")
         traceback.print_exc()
         return {"message": "Error querying PDFs", "error": str(e)}, 500
 
