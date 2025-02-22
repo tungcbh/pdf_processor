@@ -7,8 +7,6 @@ import os
 import traceback
 
 app = FastAPI()
-
-# Đảm bảo thư mục uploads tồn tại
 UPLOAD_DIR = "uploads"
 if not os.path.exists(UPLOAD_DIR):
     os.makedirs(UPLOAD_DIR)
@@ -16,12 +14,11 @@ if not os.path.exists(UPLOAD_DIR):
 @app.on_event("startup")
 def startup_event():
     try:
-        init_db()  # Khởi tạo bảng khi app khởi động
+        init_db()
         print("Database initialized successfully")
     except Exception as e:
         print(f"Error initializing database: {e}")
         traceback.print_exc()
-
 
 @app.post("/upload_pdf/")
 async def upload_pdf(files: list[UploadFile] = File(...)):
@@ -29,12 +26,12 @@ async def upload_pdf(files: list[UploadFile] = File(...)):
     try:
         for file in files:
             file_path = os.path.join(UPLOAD_DIR, file.filename)
-            # Ghi file vào thư mục uploads
+            file_content = await file.read()
             with open(file_path, "wb") as f:
-                f.write(await file.read())
-            # Parse PDF và lưu vào DB
+                f.write(file_content)
             pdf_data = parse_pdf(file_path)
-            save_to_db(pdf_data)
+            file_size = len(file_content)  # Kích thước file (bytes)
+            save_to_db(pdf_data, file.filename, file_size)
             results.append({"filename": file.filename, "status": "processed"})
         return {"message": "PDFs processed", "details": results}
     except Exception as e:
