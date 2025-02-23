@@ -63,6 +63,7 @@ async def upload_pdf(files: list[UploadFile] = File(...)):
 def query_pdf(search: str):
     try:
         results = query_db(search)
+        
         logger.info(f"Query returned {len(results)} results for search: {search}")
         return results
     except Exception as e:
