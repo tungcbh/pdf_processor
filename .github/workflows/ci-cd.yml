@@ -20,7 +20,7 @@ jobs:
           POSTGRES_DB: pdf_processor
         ports:
           - 5432:5432
-        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 2s --health-retries 5
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -30,18 +30,18 @@ jobs:
         with:
           python-version: "3.9"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+      - name: Cache Docker layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
 
-      - name: Build Docker image
+      - name: Build and test Docker image
         run: |
           docker build -t pdf-processor:latest .
-
-      - name: Test Docker container
-        run: |
-          docker run --rm -d --name pdf-app \
+          docker run -d --name pdf-app \
             -e DB_HOST=postgres \
             -e DB_PORT=5432 \
             -e DB_NAME=pdf_processor \
@@ -50,8 +50,8 @@ jobs:
             --network host \
             -p 8000:8000 \
             pdf-processor:latest
-          sleep 10
-          curl http://localhost:8000 || exit 1
+          sleep 5
+          curl -s http://localhost:8000 || exit 1
           docker stop pdf-app
 
   deploy:
@@ -73,7 +73,7 @@ jobs:
           docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/pdf-processor:${{ github.sha }} .
           docker push ${{ secrets.DOCKERHUB_USERNAME }}/pdf-processor:${{ github.sha }}
 
-      - name: Deploy to EC2 and verify DB connection
+      - name: Deploy to EC2
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USER: ${{ secrets.EC2_USER }}
@@ -81,26 +81,12 @@ jobs:
         run: |
           echo "$EC2_KEY" > ec2_key.pem
           chmod 400 ec2_key.pem
-          ssh-keygen -y -f ec2_key.pem || echo "Invalid SSH key format"
-          ssh -v -o StrictHostKeyChecking=no -i ec2_key.pem ${EC2_USER}@${EC2_HOST} << 'EOF'
-            echo "Connected to EC2 successfully"
+          ssh -o StrictHostKeyChecking=no -i ec2_key.pem ${EC2_USER}@${EC2_HOST} << 'EOF'
             docker login -u ${{ secrets.DOCKERHUB_USERNAME }} -p ${{ secrets.DOCKERHUB_TOKEN }}
-      
-            # Tạo Docker network
             docker network create pdf-network || true
-      
-            # Tạo và sửa quyền thư mục volume
-            sudo mkdir -p /data/postgres-data
-            sudo chown 999:999 /data/postgres-data
-            sudo chmod 700 /data/postgres-data
-      
-            # Dừng và xóa container cũ
-            docker stop postgres-db || true
-            docker rm postgres-db || true
-            docker stop pdf-app || true
-            docker rm pdf-app || true
-      
-            # Chạy container PostgreSQL trong network
+            sudo mkdir -p /data/postgres-data && sudo chown 999:999 /data/postgres-data && sudo chmod 700 /data/postgres-data
+            docker stop postgres-db pdf-app || true
+            docker rm postgres-db pdf-app || true
             docker run -d --name postgres-db \
               --network pdf-network \
               -e POSTGRES_USER=postgres \
@@ -108,10 +94,7 @@ jobs:
               -e POSTGRES_DB=pdf_processor \
               -v /data/postgres-data:/var/lib/postgresql/data \
               postgres:13
-      
-            sleep 10
-      
-            # Pull và chạy container ứng dụng trong network
+            sleep 5
             docker pull ${{ secrets.DOCKERHUB_USERNAME }}/pdf-processor:${{ github.sha }}
             docker run -d --name pdf-app \
               --network pdf-network \
@@ -122,10 +105,7 @@ jobs:
               -e DB_PASSWORD=${{ secrets.DB_PASSWORD }} \
               -p 8000:8000 \
               ${{ secrets.DOCKERHUB_USERNAME }}/pdf-processor:${{ github.sha }}
-      
-            sleep 10
-      
-            # Kiểm tra kết nối DB
-            docker exec pdf-app python -c "import psycopg2; conn = psycopg2.connect(host='postgres-db', port=5432, dbname='pdf_processor', user='postgres', password='${{ secrets.DB_PASSWORD }}'); print('DB connection successful'); conn.close()" || exit 1
+            sleep 5
+            docker exec pdf-app python -c "import psycopg2; conn = psycopg2.connect(host='postgres-db', port=5432, dbname='pdf_processor', user='postgres', password='${{ secrets.DB_PASSWORD }}'); conn.close()" || exit 1
           EOF
           rm ec2_key.pem
