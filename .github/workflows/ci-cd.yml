@@ -72,3 +72,55 @@ jobs:
         run: |
           docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/pdf-processor:${{ github.sha }} .
           docker push ${{ secrets.DOCKERHUB_USERNAME }}/pdf-processor:${{ github.sha }}
+
+      - name: Deploy to EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          # Ghi SSH key vào file tạm thời
+          echo "$EC2_KEY" > ec2_key.pem
+          chmod 400 ec2_key.pem
+
+          # SSH vào EC2 và deploy
+          ssh -o StrictHostKeyChecking=no -i ec2_key.pem ${EC2_USER}@${EC2_HOST} << 'EOF'
+            # Đăng nhập vào Docker Hub
+            docker login -u ${{ secrets.DOCKERHUB_USERNAME }} -p ${{ secrets.DOCKERHUB_TOKEN }}
+
+            # Tạo thư mục cho volume trên EC2 (nếu chưa có)
+            mkdir -p /data/postgres-data
+
+            # Dừng và xóa container PostgreSQL cũ (nếu có)
+            docker stop postgres-db || true
+            docker rm postgres-db || true
+
+            # Chạy container PostgreSQL với volume
+            docker run -d --name postgres-db \
+              -e POSTGRES_USER=postgres \
+              -e POSTGRES_PASSWORD=${{ secrets.DB_PASSWORD }} \
+              -e POSTGRES_DB=pdf_processor \
+              -v /data/postgres-data:/var/lib/postgresql/data \
+              -p 5432:5432 \
+              postgres:13
+
+            # Dừng và xóa container ứng dụng cũ (nếu có)
+            docker stop pdf-app || true
+            docker rm pdf-app || true
+
+            # Pull image mới từ Docker Hub
+            docker pull ${{ secrets.DOCKERHUB_USERNAME }}/pdf-processor:${{ github.sha }}
+
+            # Chạy container ứng dụng, kết nối tới PostgreSQL container
+            docker run -d --name pdf-app \
+              -e DB_HOST=localhost \
+              -e DB_PORT=5432 \
+              -e DB_NAME=pdf_processor \
+              -e DB_USER=postgres \
+              -e DB_PASSWORD=${{ secrets.DB_PASSWORD }} \
+              -p 8000:8000 \
+              ${{ secrets.DOCKERHUB_USERNAME }}/pdf-processor:${{ github.sha }}
+          EOF
+
+          # Xóa file key tạm thời
+          rm ec2_key.pem
